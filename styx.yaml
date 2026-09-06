@@ -7,6 +7,7 @@ prompt: |
 
   Steps:
   1. Create a branch: git checkout -b styx/fixes-$(date +%s)
+     The branch MUST start with "styx/" prefix (e.g. styx/fixes-1725000000)
   2. Audit all files for bugs
   3. Fix each bug you find
   4. After EVERY Go change, verify it compiles: cd . && go build -o /tmp/styx-check ./cmd/server/
