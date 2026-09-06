@@ -68,6 +68,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   24 * 60 * 60,
 		HttpOnly: true,
+		Secure:   h.Auth.IsProduction,
 		SameSite: http.SameSiteLaxMode,
 	})
 
@@ -89,6 +90,7 @@ func (h *AuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
+		Secure:   h.Auth.IsProduction,
 		SameSite: http.SameSiteLaxMode,
 	})
 
@@ -100,8 +102,11 @@ func (h *AuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
 
 // --- Login rate limiting ---
 
-var loginAttempts = make(map[string]*loginEntry)
-var loginMu sync.Mutex
+var (
+	loginAttempts   = make(map[string]*loginEntry)
+	loginMu         sync.Mutex
+	lastLoginPrune  time.Time
+)
 
 type loginEntry struct {
 	Count   int
@@ -112,7 +117,17 @@ func (h *AuthHandler) hasTooManyLoginAttempts(ip string) bool {
 	loginMu.Lock()
 	defer loginMu.Unlock()
 
+	// Periodic cleanup of expired entries
 	now := time.Now()
+	if now.Sub(lastLoginPrune) > 5*time.Minute {
+		for k, v := range loginAttempts {
+			if now.After(v.ResetAt) {
+				delete(loginAttempts, k)
+			}
+		}
+		lastLoginPrune = now
+	}
+
 	entry, exists := loginAttempts[ip]
 	if !exists || now.After(entry.ResetAt) {
 		return false

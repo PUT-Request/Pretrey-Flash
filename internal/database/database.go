@@ -11,17 +11,16 @@ import (
 )
 
 type Page struct {
-	ID           string     `json:"id"`
-	Slug         string     `json:"slug"`
-	Title        *string    `json:"title"`
-	Content      string     `json:"content"`
-	Password     *string    `json:"password,omitempty"`
-	PasswordPlain *string   `json:"passwordPlain,omitempty"`
-	EditCode     string     `json:"editCode"`
-	IsPublic     bool       `json:"isPublic"`
-	CreatedAt    time.Time  `json:"createdAt"`
-	UpdatedAt    time.Time  `json:"updatedAt"`
-	ViewCount    int        `json:"viewCount"`
+	ID        string     `json:"id"`
+	Slug      string     `json:"slug"`
+	Title     *string    `json:"title"`
+	Content   string     `json:"content"`
+	Password  *string    `json:"password,omitempty"`
+	EditCode  string     `json:"editCode"`
+	IsPublic  bool       `json:"isPublic"`
+	CreatedAt time.Time  `json:"createdAt"`
+	UpdatedAt time.Time  `json:"updatedAt"`
+	ViewCount int        `json:"viewCount"`
 }
 
 type DB struct {
@@ -65,7 +64,6 @@ func (db *DB) migrate() error {
 		title TEXT,
 		content TEXT NOT NULL,
 		password TEXT,
-		password_plain TEXT,
 		edit_code TEXT NOT NULL,
 		is_public INTEGER NOT NULL DEFAULT 1,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -81,16 +79,16 @@ func (db *DB) migrate() error {
 
 func (db *DB) CreatePage(p *Page) error {
 	_, err := db.conn.Exec(
-		`INSERT INTO pages (id, slug, title, content, password, password_plain, edit_code, is_public, created_at, updated_at, view_count)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.ID, p.Slug, p.Title, p.Content, p.Password, p.PasswordPlain, p.EditCode, boolToInt(p.IsPublic), p.CreatedAt, p.UpdatedAt, p.ViewCount,
+		`INSERT INTO pages (id, slug, title, content, password, edit_code, is_public, created_at, updated_at, view_count)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.Slug, p.Title, p.Content, p.Password, p.EditCode, boolToInt(p.IsPublic), p.CreatedAt, p.UpdatedAt, p.ViewCount,
 	)
 	return err
 }
 
 func (db *DB) GetPageBySlug(slug string) (*Page, error) {
 	row := db.conn.QueryRow(
-		`SELECT id, slug, title, content, password, password_plain, edit_code, is_public, created_at, updated_at, view_count
+		`SELECT id, slug, title, content, password, edit_code, is_public, created_at, updated_at, view_count
 		 FROM pages WHERE slug = ?`, slug,
 	)
 	return scanPage(row)
@@ -98,7 +96,7 @@ func (db *DB) GetPageBySlug(slug string) (*Page, error) {
 
 func (db *DB) GetPageByID(id string) (*Page, error) {
 	row := db.conn.QueryRow(
-		`SELECT id, slug, title, content, password, password_plain, edit_code, is_public, created_at, updated_at, view_count
+		`SELECT id, slug, title, content, password, edit_code, is_public, created_at, updated_at, view_count
 		 FROM pages WHERE id = ?`, id,
 	)
 	return scanPage(row)
@@ -134,7 +132,7 @@ func (db *DB) ListPages(search string, offset, limit int) ([]Page, int, error) {
 			WHERE title LIKE ? OR content LIKE ? OR slug LIKE ?
 		`
 		listQuery = `
-			SELECT id, slug, title, content, password, password_plain, edit_code, is_public, created_at, updated_at, view_count
+			SELECT id, slug, title, content, password, edit_code, is_public, created_at, updated_at, view_count
 			FROM pages
 			WHERE title LIKE ? OR content LIKE ? OR slug LIKE ?
 			ORDER BY created_at DESC LIMIT ? OFFSET ?
@@ -144,7 +142,7 @@ func (db *DB) ListPages(search string, offset, limit int) ([]Page, int, error) {
 	} else {
 		countQuery = `SELECT COUNT(*) FROM pages`
 		listQuery = `
-			SELECT id, slug, title, content, password, password_plain, edit_code, is_public, created_at, updated_at, view_count
+			SELECT id, slug, title, content, password, edit_code, is_public, created_at, updated_at, view_count
 			FROM pages
 			ORDER BY created_at DESC LIMIT ? OFFSET ?
 		`
@@ -169,6 +167,10 @@ func (db *DB) ListPages(search string, offset, limit int) ([]Page, int, error) {
 			return nil, 0, err
 		}
 		pages = append(pages, *p)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
 	}
 
 	return pages, total, nil
@@ -210,13 +212,18 @@ func (db *DB) GetRecentPageCounts(hours int) ([]struct{ Hour string; Count int }
 			Count int
 		}{hour, count})
 	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
 	return results, nil
 }
 
 func scanPage(row *sql.Row) (*Page, error) {
 	var p Page
 	var isPublic int
-	err := row.Scan(&p.ID, &p.Slug, &p.Title, &p.Content, &p.Password, &p.PasswordPlain, &p.EditCode, &isPublic, &p.CreatedAt, &p.UpdatedAt, &p.ViewCount)
+	err := row.Scan(&p.ID, &p.Slug, &p.Title, &p.Content, &p.Password, &p.EditCode, &isPublic, &p.CreatedAt, &p.UpdatedAt, &p.ViewCount)
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +234,7 @@ func scanPage(row *sql.Row) (*Page, error) {
 func scanPageRows(rows *sql.Rows) (*Page, error) {
 	var p Page
 	var isPublic int
-	err := rows.Scan(&p.ID, &p.Slug, &p.Title, &p.Content, &p.Password, &p.PasswordPlain, &p.EditCode, &isPublic, &p.CreatedAt, &p.UpdatedAt, &p.ViewCount)
+	err := rows.Scan(&p.ID, &p.Slug, &p.Title, &p.Content, &p.Password, &p.EditCode, &isPublic, &p.CreatedAt, &p.UpdatedAt, &p.ViewCount)
 	if err != nil {
 		return nil, err
 	}

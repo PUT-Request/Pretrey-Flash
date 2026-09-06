@@ -64,7 +64,11 @@ func (h *ModerateHandler) handleListPages(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	recentCount, _ := h.DB.CountRecentPages(12)
+	recentCount, err := h.DB.CountRecentPages(12)
+	if err != nil {
+		logger.LogError("Error counting recent pages", err)
+		recentCount = 0
+	}
 
 	jsonResponse(w, map[string]interface{}{
 		"pages": pages,
