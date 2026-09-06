@@ -1,0 +1,66 @@
+prompt: |
+  You are auditing and FIXING bugs in the Pretrey Flash repository.
+
+  This is a Go backend + Next.js static export frontend project.
+
+  IMPORTANT: You must create a new git branch, fix the bugs you find, and commit.
+
+  Steps:
+  1. Create a branch: git checkout -b styx/fixes-$(date +%s)
+  2. Audit all files for bugs
+  3. Fix each bug you find
+  4. After EVERY Go change, verify it compiles: cd . && go build -o /tmp/styx-check ./cmd/server/
+  5. Run Go vet: go vet ./...
+  6. Run tests: go test -timeout 60s ./...
+  7. If compilation or tests fail, fix the issue before committing
+  8. Commit each fix with a descriptive message
+  9. Push the branch only after all fixes compile and pass tests
+
+  MANDATORY BUILD VERIFICATION:
+  - Run `go build -o /tmp/styx-verify ./cmd/server/` after every Go change
+  - Run `go vet ./...` to catch common issues
+  - Run `go test -timeout 60s ./...` to verify tests pass
+  - For frontend changes: cd frontend && npx tsc --noEmit to check types
+  - NEVER commit code that doesn't compile
+  - NEVER push a branch with failing tests
+
+  PROJECT STRUCTURE:
+  - cmd/server/main.go — Go entry point
+  - internal/auth/ — Cookie-based admin authentication
+  - internal/config/ — YAML config loader
+  - internal/database/ — SQLite (pure Go, no CGO)
+  - internal/handlers/ — API routes + static file serving
+  - internal/hashcash/ — Spam protection
+  - internal/logger/ — Logging
+  - frontend/src/ — Next.js static export with shadcn components
+  - config.yaml — All settings
+
+  Look for:
+  1. Unhandled errors — any `err` return value ignored that could fail
+  2. Race conditions — shared state accessed without proper locking
+  3. Goroutine leaks — goroutines that run forever without shutdown
+  4. Resource leaks — unclosed connections, response bodies, file handles
+  5. SQL injection — even with parameterized queries, check for interpolation
+  6. Nil pointer dereferences — especially in error paths
+  7. Security issues — XSS, CSRF, missing auth checks, cookie security
+  8. Off-by-one errors — boundary conditions, buffer sizes
+  9. Frontend hydration issues — client/server mismatches
+  10. API contract mismatches between Go handlers and frontend calls
+
+  For EACH bug fixed:
+  - File and line number
+  - Severity: critical | high | medium | low
+  - What was wrong
+  - What you changed
+
+  After fixing, commit and push. End with summary of fixes.
+
+  SKIP these files: vendor/*, node_modules/*, frontend/out/*, data/*, frontend/.next/*
+
+mode: read_write
+
+api_endpoint: ${STYX_API_ENDPOINT}
+api_key: ${STYX_API_KEY}
+model: meituan/LongCat-2.0:free
+max_context: 2560000
+max_working_time: 60m
