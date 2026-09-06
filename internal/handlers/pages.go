@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/user/pretrey-flash-go/internal/auth"
@@ -177,13 +178,21 @@ func (h *PagesHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		slug = generateSlug(10)
+		slug, err = generateSlug(10)
+		if err != nil {
+			jsonError(w, "Failed to generate slug", http.StatusInternalServerError)
+			return
+		}
 		for attempts := 0; attempts < 5; attempts++ {
 			existing, _ := h.DB.GetPageBySlug(slug)
 			if existing == nil {
 				break
 			}
-			slug = generateSlug(10)
+			slug, err = generateSlug(10)
+			if err != nil {
+				jsonError(w, "Failed to generate slug", http.StatusInternalServerError)
+				return
+			}
 		}
 	}
 
@@ -199,22 +208,29 @@ func (h *PagesHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		hashedPassword = &hashed
 	}
 
-	editCode := generateEditCode()
-	pageID := generateSlug(24)
+	editCode, err := generateEditCode()
+	if err != nil {
+		jsonError(w, "Failed to generate edit code", http.StatusInternalServerError)
+		return
+	}
+	pageID, err := generateSlug(24)
+	if err != nil {
+		jsonError(w, "Failed to generate page ID", http.StatusInternalServerError)
+		return
+	}
 	now := time.Now()
 
 	page := &database.Page{
-		ID:           pageID,
-		Slug:         slug,
-		Title:        req.Title,
-		Content:      req.Content,
-		Password:     hashedPassword,
-		PasswordPlain: req.Password,
-		EditCode:     editCode,
-		IsPublic:     req.Password == nil || *req.Password == "",
-		CreatedAt:    now,
-		UpdatedAt:    now,
-		ViewCount:    0,
+		ID:        pageID,
+		Slug:      slug,
+		Title:     req.Title,
+		Content:   req.Content,
+		Password:  hashedPassword,
+		EditCode:  editCode,
+		IsPublic:  req.Password == nil || *req.Password == "",
+		CreatedAt: now,
+		UpdatedAt: now,
+		ViewCount: 0,
 	}
 
 	if err := h.DB.CreatePage(page); err != nil {
@@ -377,17 +393,43 @@ func (h *PagesHandler) handleDelete(w http.ResponseWriter, r *http.Request, slug
 	})
 }
 
-// --- Rate limiting ---
+// --- Rate limiting with proper synchronization ---
 
-var ipRequestWindows = make(map[string]*ipWindow)
+var (
+	ipRequestWindows = make(map[string]*ipWindow)
+	ipMu             sync.Mutex
+	lastIPPrune      time.Time
+
+	passwordAttempts = make(map[string]*rateEntry)
+	passwordMu       sync.Mutex
+	lastPasswordPrune time.Time
+)
 
 type ipWindow struct {
 	Count       int
 	WindowStart time.Time
 }
 
+type rateEntry struct {
+	Count   int
+	ResetAt time.Time
+}
+
 func (h *PagesHandler) isIPRateLimited(ip string) bool {
+	ipMu.Lock()
+	defer ipMu.Unlock()
+
+	// Periodic cleanup of expired entries
 	now := time.Now()
+	if now.Sub(lastIPPrune) > 5*time.Minute {
+		for k, v := range ipRequestWindows {
+			if now.Sub(v.WindowStart) > time.Duration(h.Config.RateLimit.WindowSeconds)*time.Second {
+				delete(ipRequestWindows, k)
+			}
+		}
+		lastIPPrune = now
+	}
+
 	current, exists := ipRequestWindows[ip]
 	if !exists || now.Sub(current.WindowStart) > time.Duration(h.Config.RateLimit.WindowSeconds)*time.Second {
 		ipRequestWindows[ip] = &ipWindow{Count: 1, WindowStart: now}
@@ -400,15 +442,21 @@ func (h *PagesHandler) isIPRateLimited(ip string) bool {
 	return false
 }
 
-var passwordAttempts = make(map[string]*rateEntry)
-
-type rateEntry struct {
-	Count   int
-	ResetAt time.Time
-}
-
 func (h *PagesHandler) isPasswordRateLimited(ip string) bool {
+	passwordMu.Lock()
+	defer passwordMu.Unlock()
+
+	// Periodic cleanup of expired entries
 	now := time.Now()
+	if now.Sub(lastPasswordPrune) > 5*time.Minute {
+		for k, v := range passwordAttempts {
+			if now.After(v.ResetAt) {
+				delete(passwordAttempts, k)
+			}
+		}
+		lastPasswordPrune = now
+	}
+
 	entry, exists := passwordAttempts[ip]
 	if !exists || now.After(entry.ResetAt) {
 		passwordAttempts[ip] = &rateEntry{Count: 1, ResetAt: now.Add(time.Duration(h.Config.RateLimit.PasswordWindowSeconds) * time.Second)}
@@ -422,6 +470,8 @@ func (h *PagesHandler) isPasswordRateLimited(ip string) bool {
 }
 
 func (h *PagesHandler) clearPasswordRateLimit(ip string) {
+	passwordMu.Lock()
+	defer passwordMu.Unlock()
 	delete(passwordAttempts, ip)
 }
 
@@ -451,17 +501,20 @@ func jsonError(w http.ResponseWriter, msg string, status int) {
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
-func generateSlug(n int) string {
+func generateSlug(n int) (string, error) {
 	const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
 	b := make([]byte, n)
 	for i := range b {
-		num, _ := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
+		num, err := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
+		if err != nil {
+			return "", fmt.Errorf("failed to generate random number: %w", err)
+		}
 		b[i] = chars[num.Int64()]
 	}
-	return string(b)
+	return string(b), nil
 }
 
-func generateEditCode() string {
+func generateEditCode() (string, error) {
 	return generateSlug(24)
 }
 
