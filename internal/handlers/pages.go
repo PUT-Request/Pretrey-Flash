@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"strconv"
@@ -71,8 +72,14 @@ func (h *PagesHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Body size check
-	if r.ContentLength > int64(h.Config.Page.MaxBodyBytes) {
+	// Body size check - use LimitReader to prevent chunked encoding bypass
+	limitedReader := io.LimitReader(r.Body, int64(h.Config.Page.MaxBodyBytes)+1)
+	body, err := io.ReadAll(limitedReader)
+	if err != nil {
+		jsonError(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	if len(body) > h.Config.Page.MaxBodyBytes {
 		jsonError(w, "Request body too large (max 512 KB)", http.StatusRequestEntityTooLarge)
 		return
 	}
@@ -84,7 +91,7 @@ func (h *PagesHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		CustomSlug *string `json:"customSlug"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		jsonError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -194,6 +201,12 @@ func (h *PagesHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		// Check if we exhausted all attempts and still have a collision
+		existing, _ := h.DB.GetPageBySlug(slug)
+		if existing != nil {
+			jsonError(w, "Failed to generate unique slug. Please try again.", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	// Hash password
@@ -285,12 +298,24 @@ func (h *PagesHandler) handleGet(w http.ResponseWriter, r *http.Request, slug st
 }
 
 func (h *PagesHandler) handleUpdate(w http.ResponseWriter, r *http.Request, slug string) {
+	// Body size check - use LimitReader to prevent chunked encoding bypass
+	limitedReader := io.LimitReader(r.Body, int64(h.Config.Page.MaxBodyBytes)+1)
+	body, err := io.ReadAll(limitedReader)
+	if err != nil {
+		jsonError(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	if len(body) > h.Config.Page.MaxBodyBytes {
+		jsonError(w, "Request body too large (max 512 KB)", http.StatusRequestEntityTooLarge)
+		return
+	}
+
 	var req struct {
 		Content  string `json:"content"`
 		EditCode string `json:"editCode"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		jsonError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -310,16 +335,49 @@ func (h *PagesHandler) handleUpdate(w http.ResponseWriter, r *http.Request, slug
 		return
 	}
 
-	// Hashcash verification
+	// Hashcash verification with replay protection
 	hashcashNonce := r.Header.Get("X-Hashcash")
 	if hashcashNonce == "" {
 		jsonError(w, "Missing spam protection (Hashcash)", http.StatusBadRequest)
 		return
 	}
-	if !hashcash.VerifyHashcashServer("pretreyflash", hashcashNonce, h.Config.Hashcash.DefaultDifficulty) {
+
+	if !hashcash.ValidateNoncePattern(hashcashNonce) {
+		jsonError(w, "Invalid spam protection token format", http.StatusBadRequest)
+		return
+	}
+
+	hashcashTimestampHeader := r.Header.Get("X-Hashcash-Timestamp")
+	if hashcashTimestampHeader == "" {
+		jsonError(w, "Missing spam protection timestamp", http.StatusBadRequest)
+		return
+	}
+
+	hashcashTimestamp, err := strconv.ParseInt(hashcashTimestampHeader, 10, 64)
+	if err != nil {
+		jsonError(w, "Invalid spam protection timestamp", http.StatusBadRequest)
+		return
+	}
+
+	if time.Duration(abs64(time.Now().UnixMilli()-hashcashTimestamp))*time.Millisecond > hashcash.HashcashTimestampTTL() {
+		jsonError(w, "Spam protection challenge expired. Please retry.", http.StatusBadRequest)
+		return
+	}
+
+	challenge := fmt.Sprintf("pretreyflash:%d", hashcashTimestamp)
+	clientIP := getClientIP(r)
+	replayKey := hashcash.FormatReplayKey(clientIP, challenge, hashcashNonce)
+	if hashcash.IsReplay(replayKey) {
+		jsonError(w, "Duplicate spam protection token detected. Please retry.", http.StatusConflict)
+		return
+	}
+
+	if !hashcash.VerifyHashcashServer(challenge, hashcashNonce, h.Config.Hashcash.DefaultDifficulty) {
 		jsonError(w, "Invalid spam protection", http.StatusBadRequest)
 		return
 	}
+
+	hashcash.MarkReplayUsed(replayKey, hashcash.HashcashReplayTTL())
 
 	page, err := h.DB.GetPageBySlug(slug)
 	if err != nil {
@@ -346,11 +404,23 @@ func (h *PagesHandler) handleUpdate(w http.ResponseWriter, r *http.Request, slug
 }
 
 func (h *PagesHandler) handleDelete(w http.ResponseWriter, r *http.Request, slug string) {
+	// Body size check - use LimitReader to prevent chunked encoding bypass
+	limitedReader := io.LimitReader(r.Body, int64(h.Config.Page.MaxBodyBytes)+1)
+	body, err := io.ReadAll(limitedReader)
+	if err != nil {
+		jsonError(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+	if len(body) > h.Config.Page.MaxBodyBytes {
+		jsonError(w, "Request body too large (max 512 KB)", http.StatusRequestEntityTooLarge)
+		return
+	}
+
 	var req struct {
 		EditCode string `json:"editCode"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		jsonError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -360,15 +430,49 @@ func (h *PagesHandler) handleDelete(w http.ResponseWriter, r *http.Request, slug
 		return
 	}
 
+	// Hashcash verification with replay protection
 	hashcashNonce := r.Header.Get("X-Hashcash")
 	if hashcashNonce == "" {
 		jsonError(w, "Missing spam protection (Hashcash)", http.StatusBadRequest)
 		return
 	}
-	if !hashcash.VerifyHashcashServer("pretreyflash", hashcashNonce, h.Config.Hashcash.DefaultDifficulty) {
+
+	if !hashcash.ValidateNoncePattern(hashcashNonce) {
+		jsonError(w, "Invalid spam protection token format", http.StatusBadRequest)
+		return
+	}
+
+	hashcashTimestampHeader := r.Header.Get("X-Hashcash-Timestamp")
+	if hashcashTimestampHeader == "" {
+		jsonError(w, "Missing spam protection timestamp", http.StatusBadRequest)
+		return
+	}
+
+	hashcashTimestamp, err := strconv.ParseInt(hashcashTimestampHeader, 10, 64)
+	if err != nil {
+		jsonError(w, "Invalid spam protection timestamp", http.StatusBadRequest)
+		return
+	}
+
+	if time.Duration(abs64(time.Now().UnixMilli()-hashcashTimestamp))*time.Millisecond > hashcash.HashcashTimestampTTL() {
+		jsonError(w, "Spam protection challenge expired. Please retry.", http.StatusBadRequest)
+		return
+	}
+
+	challenge := fmt.Sprintf("pretreyflash:%d", hashcashTimestamp)
+	clientIP := getClientIP(r)
+	replayKey := hashcash.FormatReplayKey(clientIP, challenge, hashcashNonce)
+	if hashcash.IsReplay(replayKey) {
+		jsonError(w, "Duplicate spam protection token detected. Please retry.", http.StatusConflict)
+		return
+	}
+
+	if !hashcash.VerifyHashcashServer(challenge, hashcashNonce, h.Config.Hashcash.DefaultDifficulty) {
 		jsonError(w, "Invalid spam protection", http.StatusBadRequest)
 		return
 	}
+
+	hashcash.MarkReplayUsed(replayKey, hashcash.HashcashReplayTTL())
 
 	page, err := h.DB.GetPageBySlug(slug)
 	if err != nil {

@@ -10,14 +10,10 @@ import (
 	"time"
 )
 
-type ReplayEntry struct {
-	ExpiresAt time.Time
-}
-
 var (
-	usedHashcash  = make(map[string]time.Time)
-	usedMu        sync.Mutex
-	lastPrune     time.Time
+	usedHashcash = make(map[string]time.Time)
+	usedMu       sync.Mutex
+	lastPrune    time.Time
 )
 
 func VerifyHashcashServer(challenge, nonce string, difficulty int) bool {
@@ -35,6 +31,30 @@ func VerifyHashcashServer(challenge, nonce string, difficulty int) bool {
 	}
 
 	return zeroBits >= difficulty
+}
+
+// CheckAndMarkReplay atomically checks if a replay key exists and marks it as used.
+// Returns true if the key was already used (replay detected), false if it was newly marked.
+func CheckAndMarkReplay(entryKey string, ttl time.Duration) bool {
+	usedMu.Lock()
+	defer usedMu.Unlock()
+
+	now := time.Now()
+	if now.Sub(lastPrune) > 30*time.Second {
+		for k, v := range usedHashcash {
+			if v.Before(now) {
+				delete(usedHashcash, k)
+			}
+		}
+		lastPrune = now
+	}
+
+	if _, exists := usedHashcash[entryKey]; exists {
+		return true
+	}
+
+	usedHashcash[entryKey] = now.Add(ttl)
+	return false
 }
 
 func IsReplay(entryKey string) bool {

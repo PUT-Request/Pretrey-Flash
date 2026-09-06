@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/user/pretrey-flash-go/internal/auth"
@@ -66,22 +67,46 @@ func main() {
 			return
 		}
 
-		path := r.URL.Path
-		if path == "" {
-			path = "/"
+		// Sanitize path to prevent path traversal attacks
+		// Clean the path and ensure it stays within the static directory
+		cleanPath := filepath.Clean(r.URL.Path)
+		if cleanPath == "" {
+			cleanPath = "/"
 		}
 
-		fullPath := staticDir + path
+		// Reject paths that attempt to traverse outside the static directory
+		if strings.Contains(cleanPath, "..") {
+			http.Error(w, "Invalid path", http.StatusBadRequest)
+			return
+		}
+
+		fullPath := filepath.Join(staticDir, cleanPath)
+
+		// Double-check the resolved path is within the static directory
+		absStaticDir, err := filepath.Abs(staticDir)
+		if err != nil {
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		absFullPath, err := filepath.Abs(fullPath)
+		if err != nil {
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		if !strings.HasPrefix(absFullPath, absStaticDir+string(filepath.Separator)) && absFullPath != absStaticDir {
+			http.Error(w, "Access denied", http.StatusForbidden)
+			return
+		}
 
 		// 1. Try exact file
-		if info, err := os.Stat(fullPath); err == nil && !info.IsDir() {
-			http.ServeFile(w, r, fullPath)
+		if info, err := os.Stat(absFullPath); err == nil && !info.IsDir() {
+			http.ServeFile(w, r, absFullPath)
 			return
 		}
 
 		// 2. Try path.html (SPA routes like /new -> /new.html)
-		if !strings.HasSuffix(path, "/") {
-			htmlPath := fullPath + ".html"
+		if !strings.HasSuffix(cleanPath, "/") {
+			htmlPath := absFullPath + ".html"
 			if _, err := os.Stat(htmlPath); err == nil {
 				http.ServeFile(w, r, htmlPath)
 				return
@@ -89,14 +114,14 @@ func main() {
 		}
 
 		// 3. Try path/index.html
-		indexPath := fullPath + "/index.html"
+		indexPath := absFullPath + "/index.html"
 		if _, err := os.Stat(indexPath); err == nil {
 			http.ServeFile(w, r, indexPath)
 			return
 		}
 
 		// 4. SPA fallback
-		http.ServeFile(w, r, staticDir+"/index.html")
+		http.ServeFile(w, r, absStaticDir+"/index.html")
 	})
 
 	handler := corsMiddleware(mux, cfg)
