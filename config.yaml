@@ -1,0 +1,37 @@
+server:
+  port: 8080
+  host: "0.0.0.0"
+
+static_dir: "./frontend/out"
+
+database:
+  path: "./data/pretrey.db"
+
+admin:
+  username: "admin"
+  password: "admin"
+  token_secret: "dev-only-change-me-please-dev-only-change-me"
+
+hashcash:
+  default_difficulty: 0
+  custom_slug_difficulty: 18
+
+rate_limit:
+  max_create_per_ip: 20
+  window_seconds: 60
+  max_password_attempts: 10
+  password_window_seconds: 60
+  max_login_attempts: 10
+  login_window_seconds: 60
+
+page:
+  max_content_length: 200000
+  max_title_length: 200
+  max_body_bytes: 524288
+  max_password_length: 15
+  custom_slug_pattern: "^[a-z0-9_-]{3,64}$"
+
+cors:
+  allowed_origins:
+    - "http://localhost:3000"
+    - "http://localhost:3001"

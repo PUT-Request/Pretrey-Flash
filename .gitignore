@@ -1,0 +1,33 @@
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+pretrey-server
+*.test
+*.out
+vendor/
+
+# Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# Database
+data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+/tmp/
