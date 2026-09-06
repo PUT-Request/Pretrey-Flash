@@ -41,11 +41,13 @@ func New(dbPath string) (*DB, error) {
 	conn.SetMaxOpenConns(1)
 
 	if err := conn.Ping(); err != nil {
+		conn.Close()
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
 
 	db := &DB{conn: conn}
 	if err := db.migrate(); err != nil {
+		conn.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 

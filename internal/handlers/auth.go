@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -32,12 +33,20 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Body size check - use LimitReader to prevent chunked encoding bypass
+	limitedReader := io.LimitReader(r.Body, 1024*1024) // 1MB limit for login
+	body, err := io.ReadAll(limitedReader)
+	if err != nil {
+		jsonError(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil {
 		jsonError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
@@ -74,7 +83,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	jsonResponse(w, map[string]interface{}{
 		"success": true,
-		"message": "Login successful",
+	"message": "Login successful",
 	})
 }
 
