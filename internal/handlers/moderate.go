@@ -45,16 +45,15 @@ func (h *ModerateHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ModerateHandler) handleListPages(w http.ResponseWriter, r *http.Request) {
-	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	search := strings.TrimSpace(r.URL.Query().Get("search"))
-
-	if page < 1 {
+	page, err := strconv.Atoi(r.URL.Query().Get("page"))
+	if err != nil || page < 1 {
 		page = 1
 	}
-	if limit < 1 || limit > 100 {
+	limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
+	if err != nil || limit < 1 || limit > 100 {
 		limit = 10
 	}
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
 
 	offset := (page - 1) * limit
 	pages, totalCount, err := h.DB.ListPages(search, offset, limit)

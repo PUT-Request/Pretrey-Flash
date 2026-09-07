@@ -34,6 +34,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Body size check - use LimitReader to prevent chunked encoding bypass
+	defer r.Body.Close()
 	limitedReader := io.LimitReader(r.Body, 1024*1024) // 1MB limit for login
 	body, err := io.ReadAll(limitedReader)
 	if err != nil {
@@ -83,7 +84,7 @@ func (h *AuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 
 	jsonResponse(w, map[string]interface{}{
 		"success": true,
-	"message": "Login successful",
+		"message": "Login successful",
 	})
 }
 

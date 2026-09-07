@@ -15,7 +15,7 @@ type Page struct {
 	Slug      string     `json:"slug"`
 	Title     *string    `json:"title"`
 	Content   string     `json:"content"`
-	Password  *string    `json:"password,omitempty"`
+	Password  *string    `json:"-"` // Never serialize password hash to JSON
 	EditCode  string     `json:"editCode"`
 	IsPublic  bool       `json:"isPublic"`
 	CreatedAt time.Time  `json:"createdAt"`

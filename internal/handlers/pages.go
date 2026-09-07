@@ -73,6 +73,7 @@ func (h *PagesHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Body size check - use LimitReader to prevent chunked encoding bypass
+	defer r.Body.Close()
 	limitedReader := io.LimitReader(r.Body, int64(h.Config.Page.MaxBodyBytes)+1)
 	body, err := io.ReadAll(limitedReader)
 	if err != nil {
@@ -155,7 +156,7 @@ func (h *PagesHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	replayKey := hashcash.FormatReplayKey(clientIP, challenge, hashcashNonce)
-	if hashcash.IsReplay(replayKey) {
+	if hashcash.CheckAndMarkReplay(replayKey, hashcash.HashcashReplayTTL()) {
 		jsonError(w, "Duplicate spam protection token detected. Please retry.", http.StatusConflict)
 		return
 	}
@@ -168,8 +169,6 @@ func (h *PagesHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-
-	hashcash.MarkReplayUsed(replayKey, hashcash.HashcashReplayTTL())
 
 	// Generate or validate slug
 	var slug string
@@ -261,7 +260,19 @@ func (h *PagesHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *PagesHandler) handleGet(w http.ResponseWriter, r *http.Request, slug string) {
-	password := r.URL.Query().Get("password")
+	defer r.Body.Close()
+
+	// Read password from request body instead of query parameter (security fix)
+	var req struct {
+		Password string `json:"password"`
+	}
+	if r.Body != nil && r.ContentLength > 0 {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1024))
+		if err == nil && len(body) > 0 {
+			_ = json.Unmarshal(body, &req)
+		}
+	}
+	password := req.Password
 
 	page, err := h.DB.GetPageBySlug(slug)
 	if err != nil {
@@ -283,6 +294,7 @@ func (h *PagesHandler) handleGet(w http.ResponseWriter, r *http.Request, slug st
 		}
 
 		if err := bcrypt.CompareHashAndPassword([]byte(*page.Password), []byte(password)); err != nil {
+			h.recordFailedPasswordAttempt(clientIP)
 			jsonError(w, "Invalid password", http.StatusUnauthorized)
 			return
 		}
@@ -291,7 +303,9 @@ func (h *PagesHandler) handleGet(w http.ResponseWriter, r *http.Request, slug st
 	}
 
 	// Increment view count
-	h.DB.IncrementViewCount(slug)
+	if err := h.DB.IncrementViewCount(slug); err != nil {
+		logger.LogError("Error incrementing view count", err)
+	}
 	page.ViewCount++
 
 	jsonResponse(w, page)
@@ -299,6 +313,7 @@ func (h *PagesHandler) handleGet(w http.ResponseWriter, r *http.Request, slug st
 
 func (h *PagesHandler) handleUpdate(w http.ResponseWriter, r *http.Request, slug string) {
 	// Body size check - use LimitReader to prevent chunked encoding bypass
+	defer r.Body.Close()
 	limitedReader := io.LimitReader(r.Body, int64(h.Config.Page.MaxBodyBytes)+1)
 	body, err := io.ReadAll(limitedReader)
 	if err != nil {
@@ -367,7 +382,7 @@ func (h *PagesHandler) handleUpdate(w http.ResponseWriter, r *http.Request, slug
 	challenge := fmt.Sprintf("pretreyflash:%d", hashcashTimestamp)
 	clientIP := getClientIP(r)
 	replayKey := hashcash.FormatReplayKey(clientIP, challenge, hashcashNonce)
-	if hashcash.IsReplay(replayKey) {
+	if hashcash.CheckAndMarkReplay(replayKey, hashcash.HashcashReplayTTL()) {
 		jsonError(w, "Duplicate spam protection token detected. Please retry.", http.StatusConflict)
 		return
 	}
@@ -376,8 +391,6 @@ func (h *PagesHandler) handleUpdate(w http.ResponseWriter, r *http.Request, slug
 		jsonError(w, "Invalid spam protection", http.StatusBadRequest)
 		return
 	}
-
-	hashcash.MarkReplayUsed(replayKey, hashcash.HashcashReplayTTL())
 
 	page, err := h.DB.GetPageBySlug(slug)
 	if err != nil {
@@ -405,6 +418,7 @@ func (h *PagesHandler) handleUpdate(w http.ResponseWriter, r *http.Request, slug
 
 func (h *PagesHandler) handleDelete(w http.ResponseWriter, r *http.Request, slug string) {
 	// Body size check - use LimitReader to prevent chunked encoding bypass
+	defer r.Body.Close()
 	limitedReader := io.LimitReader(r.Body, int64(h.Config.Page.MaxBodyBytes)+1)
 	body, err := io.ReadAll(limitedReader)
 	if err != nil {
@@ -462,7 +476,7 @@ func (h *PagesHandler) handleDelete(w http.ResponseWriter, r *http.Request, slug
 	challenge := fmt.Sprintf("pretreyflash:%d", hashcashTimestamp)
 	clientIP := getClientIP(r)
 	replayKey := hashcash.FormatReplayKey(clientIP, challenge, hashcashNonce)
-	if hashcash.IsReplay(replayKey) {
+	if hashcash.CheckAndMarkReplay(replayKey, hashcash.HashcashReplayTTL()) {
 		jsonError(w, "Duplicate spam protection token detected. Please retry.", http.StatusConflict)
 		return
 	}
@@ -471,8 +485,6 @@ func (h *PagesHandler) handleDelete(w http.ResponseWriter, r *http.Request, slug
 		jsonError(w, "Invalid spam protection", http.StatusBadRequest)
 		return
 	}
-
-	hashcash.MarkReplayUsed(replayKey, hashcash.HashcashReplayTTL())
 
 	page, err := h.DB.GetPageBySlug(slug)
 	if err != nil {
@@ -563,14 +575,22 @@ func (h *PagesHandler) isPasswordRateLimited(ip string) bool {
 
 	entry, exists := passwordAttempts[ip]
 	if !exists || now.After(entry.ResetAt) {
-		passwordAttempts[ip] = &rateEntry{Count: 1, ResetAt: now.Add(time.Duration(h.Config.RateLimit.PasswordWindowSeconds) * time.Second)}
 		return false
 	}
-	if entry.Count >= h.Config.RateLimit.MaxPasswordAttempts {
-		return true
+	return entry.Count >= h.Config.RateLimit.MaxPasswordAttempts
+}
+
+func (h *PagesHandler) recordFailedPasswordAttempt(ip string) {
+	passwordMu.Lock()
+	defer passwordMu.Unlock()
+
+	now := time.Now()
+	entry, exists := passwordAttempts[ip]
+	if !exists || now.After(entry.ResetAt) {
+		passwordAttempts[ip] = &rateEntry{Count: 1, ResetAt: now.Add(time.Duration(h.Config.RateLimit.PasswordWindowSeconds) * time.Second)}
+		return
 	}
 	entry.Count++
-	return false
 }
 
 func (h *PagesHandler) clearPasswordRateLimit(ip string) {
